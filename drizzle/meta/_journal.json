@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1775157833644,
+      "tag": "0000_acoustic_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1775158155195,
+      "tag": "0001_messy_dreadnoughts",
+      "breakpoints": true
+    }
+  ]
+}
