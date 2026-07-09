@@ -5,9 +5,32 @@ import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { notifyOwner } from "./_core/notification";
+import { generateOllamaResponse } from "./ollama";
 
 export const appRouter = router({
   system: systemRouter,
+
+  // ============ AI TEST ROUTE ============
+  ai: router({
+    chat: publicProcedure
+      .input(z.object({
+        messages: z.array(z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string(),
+        })),
+        clientName: z.string().default("Teste"),
+        tenantId: z.number().default(1),
+      }))
+      .mutation(async ({ input }) => {
+        const servicos = await db.getServicesByTenant(input.tenantId);
+        const result = await generateOllamaResponse(
+          input.messages,
+          input.clientName,
+          servicos.map(s => s.name)
+        );
+        return result;
+      }),
+  }),
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {

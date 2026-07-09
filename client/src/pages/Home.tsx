@@ -61,7 +61,7 @@ export default function Home() {
               onClick={() => window.location.href = getLoginUrl()}
               className="w-full h-12 text-base font-semibold"
             >
-              Entrar com Manus
+              Fazer Login
             </Button>
           </div>
 

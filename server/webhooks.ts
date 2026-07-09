@@ -1,169 +1,143 @@
-import { Router, Request, Response } from "express";
-import * as db from "./db";
-import { processWhatsAppMessage } from "./gemini";
+import { Router } from 'express';
+import { generateOllamaResponse } from './ollama';
+import {
+  getClientByPhone,
+  createClient,
+  getServicesByTenant,
+  getTenantBySlug,
+  createAppointment,
+  createAILog,
+  createWebhookLog,
+} from './db';
 
 export const webhookRouter = Router();
 
-/**
- * WhatsApp webhook handler
- * Receives messages from WhatsApp Evolution API
- */
-webhookRouter.post("/whatsapp", async (req: Request, res: Response) => {
+const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL || 'http://localhost:3333';
+const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN || '';
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || '';
+
+webhookRouter.get('/whatsapp', (req, res) => {
+  const token = req.query.hub_verify_token;
+  const challenge = req.query.hub_challenge;
+  if (token === WHATSAPP_VERIFY_TOKEN) {
+    return res.send(challenge);
+  }
+  return res.status(403).json({ error: 'Token de verificação inválido' });
+});
+
+async function sendWhatsAppMessage(instanceName: string, number: string, text: string) {
   try {
-    const { tenantId, clientPhone, clientName, messageText, messageId, attachmentUrl } = req.body;
+    await fetch(`${EVOLUTION_API_URL}/api/instances/${instanceName}/send/text`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${EVOLUTION_API_TOKEN}`,
+      },
+      body: JSON.stringify({ number, text }),
+    });
+  } catch (error) {
+    console.error('[WhatsApp] Erro ao enviar resposta:', error);
+  }
+}
 
-    if (!tenantId || !clientPhone || !messageText) {
-      return res.status(400).json({ error: "Missing required fields" });
+webhookRouter.post('/whatsapp', async (req, res) => {
+  let tenantId: number | undefined;
+  try {
+    const { data } = req.body;
+    const msg = data?.messages?.[0];
+
+    if (!msg || msg.key?.fromMe) {
+      return res.status(200).json({ success: true, ignored: true });
     }
 
-    // Get tenant configuration
-    const tenant = await db.getTenantById(tenantId);
-    if (!tenant || !tenant.isActive) {
-      return res.status(404).json({ error: "Tenant not found" });
+    const clientPhone = msg.key.remoteJid.split('@')[0];
+    const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+    const instanceName = data.instanceName;
+
+    if (!messageText || !clientPhone) {
+      console.warn('[Webhook] Payload incompleto:', JSON.stringify(req.body));
+      return res.status(400).json({ error: 'Payload incompleto.' });
     }
 
-    // Get or create client
-    let client = await db.getClientByPhone(tenantId, clientPhone);
+    const tenant = await getTenantBySlug(instanceName);
+    if (!tenant) {
+      console.warn(`[Webhook] Tenant não encontrado para instância: ${instanceName}`);
+      return res.status(404).json({ error: 'Tenant não encontrado.' });
+    }
+    tenantId = tenant.id;
+
+    console.log(`[Webhook] Mensagem recebida de ${clientPhone} (tenant ${tenantId}): ${messageText}`);
+
+    let client = await getClientByPhone(tenantId, clientPhone);
     if (!client) {
-      await db.createClient({
-        tenantId,
-        name: clientName || "Unknown",
-        phone: clientPhone,
-        whatsappId: messageId,
-        isActive: true,
-      });
-      // Fetch the created client
-      client = await db.getClientByPhone(tenantId, clientPhone);
+      await createClient({ tenantId, phone: clientPhone, name: 'Cliente' });
+      client = await getClientByPhone(tenantId, clientPhone);
     }
 
-    if (!client) {
-      return res.status(500).json({ error: "Failed to create client" });
-    }
-
-    // Get services and business hours for AI processing
-    const services = await db.getServicesByTenant(tenantId);
-    const businessHours = await db.getBusinessHoursByTenant(tenantId);
-
-    const businessHoursString = businessHours
-      .map((bh) => `${bh.dayOfWeek}: ${bh.openTime}-${bh.closeTime}`)
-      .join(", ");
-
-    // Process message with Gemini
-    const geminiApiKey = tenant.geminiApiKey;
-    if (!geminiApiKey) {
-      console.warn("[Webhook] No Gemini API key configured for tenant", tenantId);
-      return res.status(500).json({ error: "AI not configured" });
-    }
-
-    const extractedData = await processWhatsAppMessage(
-      messageText,
-      geminiApiKey,
-      tenant.name,
-      services,
-      businessHoursString
+    const servicosDoTenant = await getServicesByTenant(tenantId);
+    const iaResult = await generateOllamaResponse(
+      [{ role: 'user', content: messageText }],
+      client?.name || 'Cliente',
+      servicosDoTenant.map(s => s.name)
     );
 
-    // Store conversation
-    await db.createConversation({
-      tenantId,
-      clientId: client.id,
-      messageId,
-      direction: "inbound",
-      messageText,
-      messageType: attachmentUrl ? "document" : "text",
-      aiProcessed: true,
-      extractedData: extractedData as any,
-      attachmentUrl,
-    });
-
-    // Store AI log
-    await db.createAILog({
+    await createAILog({
       tenantId,
       inputText: messageText,
-      outputText: extractedData.suggestedResponse,
-      extractedIntent: extractedData.intent,
-      extractedDate: extractedData.date ? new Date(extractedData.date) : undefined,
-      extractedService: extractedData.service,
-      confidence: extractedData.confidence?.toString(),
-      processingTimeMs: 0,
-    });
+      outputText: JSON.stringify(iaResult),
+      extractedIntent: iaResult.intencao,
+      extractedDate: iaResult.data ? new Date(iaResult.data) : null,
+      extractedService: iaResult.servico,
+    } as any);
 
-    // Handle booking intent
-    if (extractedData.intent === "booking" && extractedData.service && extractedData.date) {
-      // Check if service exists
-      const service = services.find((s) => s.name.toLowerCase() === extractedData.service?.toLowerCase());
+    let respostaFinal = iaResult.resposta_cliente;
 
-      if (service) {
-        // Parse date and time
-        const appointmentDate = new Date(extractedData.date);
-        if (extractedData.time) {
-          const [hours, minutes] = extractedData.time.split(":").map(Number);
-          appointmentDate.setHours(hours, minutes, 0, 0);
-        }
+    if (iaResult.intencao === 'agendar' && iaResult.data && iaResult.hora && client) {
+      const servicos = await getServicesByTenant(tenantId);
+      const servicoEncontrado = servicos.find(s =>
+        iaResult.servico && s.name.toLowerCase().includes(iaResult.servico.toLowerCase())
+      );
 
-        const endTime = new Date(appointmentDate);
-        endTime.setMinutes(endTime.getMinutes() + service.durationMinutes);
+      if (!servicoEncontrado) {
+        respostaFinal = 'Não consegui identificar qual serviço você quer agendar. Pode me dizer o nome exato?';
+      } else {
+        const startTime = new Date(`${iaResult.data}T${iaResult.hora}:00`);
+        const endTime = new Date(startTime.getTime() + servicoEncontrado.durationMinutes * 60000);
 
-        // Create appointment
-        await db.createAppointment({
+        await createAppointment({
           tenantId,
           clientId: client.id,
-          serviceId: service.id,
-          startTime: appointmentDate,
+          serviceId: servicoEncontrado.id,
+          startTime,
           endTime,
-          source: "whatsapp",
-          notes: `Created from WhatsApp: ${messageText}`,
-          whatsappMessageId: messageId,
-          status: "pending",
-        });
+          status: 'pending',
+          source: 'whatsapp',
+        } as any);
       }
     }
 
-    // Send response
-    res.json({
-      success: true,
-      intent: extractedData.intent,
-      response: extractedData.suggestedResponse,
-      confidence: extractedData.confidence,
-    });
-  } catch (error) {
-    console.error("[Webhook] Error processing WhatsApp message:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
+    await sendWhatsAppMessage(instanceName, clientPhone, respostaFinal);
 
-/**
- * Webhook verification endpoint for WhatsApp
- */
-webhookRouter.get("/whatsapp", (req: Request, res: Response) => {
-  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || "verify_token_123";
-  const token = req.query.hub_verify_token as string;
-  const challenge = req.query.hub_challenge as string;
-
-  if (token === verifyToken) {
-    res.status(200).send(challenge);
-  } else {
-    res.status(403).send("Verification failed");
-  }
-});
-
-/**
- * Generic webhook log endpoint for debugging
- */
-webhookRouter.post("/log", async (req: Request, res: Response) => {
-  try {
-    const { tenantId, webhookType, payload } = req.body;
-
-    await db.createWebhookLog({
+    await createWebhookLog({
       tenantId,
-      webhookType,
-      payload,
-      status: "success",
-    });
+      webhookType: 'whatsapp',
+      payload: req.body,
+      status: 'success',
+      retryCount: 0,
+    } as any);
 
-    res.json({ success: true });
+    return res.status(200).json({ success: true, intent: iaResult.intencao, response: respostaFinal });
   } catch (error) {
-    console.error("[Webhook] Error logging webhook:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Erro no Webhook:', error);
+    if (tenantId) {
+      await createWebhookLog({
+        tenantId,
+        webhookType: 'whatsapp',
+        payload: req.body,
+        status: 'error',
+        retryCount: 0,
+      } as any).catch(() => {});
+    }
+    return res.status(500).json({ error: 'Erro interno no processamento do webhook.' });
   }
 });

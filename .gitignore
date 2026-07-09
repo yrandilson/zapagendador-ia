@@ -9,3 +9,5 @@ build/
 *.db
 coverage/
 .vscode/
+*.bak
+*.bak2

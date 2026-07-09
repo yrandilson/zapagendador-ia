@@ -9,6 +9,7 @@ import Appointments from "./pages/Appointments";
 import Customers from "./pages/Customers";
 import Services from "./pages/Services";
 import Settings from "./pages/Settings";
+import AITeste from "./pages/AITeste";
 
 function Router() {
   return (
@@ -18,6 +19,7 @@ function Router() {
       <Route path="/customers" component={Customers} />
       <Route path="/services" component={Services} />
       <Route path="/settings" component={Settings} />
+      <Route path="/ai-teste" component={AITeste} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
