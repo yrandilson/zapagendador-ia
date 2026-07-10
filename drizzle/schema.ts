@@ -52,6 +52,7 @@ export const tenants = mysqlTable("tenants", {
   whatsappNumber: varchar("whatsappNumber", { length: 20 }),
   whatsappApiKey: text("whatsappApiKey"),
   geminiApiKey: text("geminiApiKey"),
+  notificationPreferences: json("notificationPreferences"),
   timezone: varchar("timezone", { length: 50 }).default("America/Sao_Paulo").notNull(),
   maxConcurrentBookings: int("maxConcurrentBookings").default(1).notNull(),
   isActive: boolean("isActive").default(true).notNull(),

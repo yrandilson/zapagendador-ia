@@ -7,6 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Appointments from "./pages/Appointments";
 import Customers from "./pages/Customers";
+import Documents from "./pages/Documents";
 import Services from "./pages/Services";
 import Settings from "./pages/Settings";
 import AITeste from "./pages/AITeste";
@@ -17,8 +18,10 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/appointments" component={Appointments} />
       <Route path="/customers" component={Customers} />
+      <Route path="/documents" component={Documents} />
       <Route path="/services" component={Services} />
       <Route path="/settings" component={Settings} />
+      <Route path="/ai" component={AITeste} />
       <Route path="/ai-teste" component={AITeste} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

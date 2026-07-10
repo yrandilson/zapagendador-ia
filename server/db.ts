@@ -143,6 +143,19 @@ export async function createTenant(data: typeof tenants.$inferInsert) {
   return result;
 }
 
+export async function updateTenant(
+  tenantId: number,
+  data: Partial<typeof tenants.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(tenants)
+    .set(data)
+    .where(eq(tenants.id, tenantId));
+}
+
 // ============ APPOINTMENT QUERIES ============
 
 export async function getAppointmentsByTenant(
@@ -231,6 +244,19 @@ export async function getClientByPhone(tenantId: number, phone: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function getClientById(tenantId: number, clientId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(clients)
+    .where(and(eq(clients.tenantId, tenantId), eq(clients.id, clientId)))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
 export async function createClient(data: typeof clients.$inferInsert) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -249,6 +275,16 @@ export async function updateClient(
   return db
     .update(clients)
     .set(data)
+    .where(eq(clients.id, clientId));
+}
+
+export async function deactivateClient(clientId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(clients)
+    .set({ isActive: false })
     .where(eq(clients.id, clientId));
 }
 
@@ -285,6 +321,29 @@ export async function createService(data: typeof services.$inferInsert) {
   return db.insert(services).values(data);
 }
 
+export async function updateService(
+  serviceId: number,
+  data: Partial<typeof services.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(services)
+    .set(data)
+    .where(eq(services.id, serviceId));
+}
+
+export async function deactivateService(serviceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(services)
+    .set({ isActive: false })
+    .where(eq(services.id, serviceId));
+}
+
 // ============ BUSINESS HOURS QUERIES ============
 
 export async function getBusinessHoursByTenant(tenantId: number) {
@@ -307,6 +366,38 @@ export async function createBusinessHours(
   return db.insert(businessHours).values(data);
 }
 
+export async function upsertBusinessHoursForTenant(
+  tenantId: number,
+  items: Array<typeof businessHours.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await getBusinessHoursByTenant(tenantId);
+  const existingByDay = new Map(existing.map((item) => [item.dayOfWeek, item]));
+
+  for (const item of items) {
+    const current = existingByDay.get(item.dayOfWeek);
+    if (current) {
+      await db
+        .update(businessHours)
+        .set({
+          isOpen: item.isOpen,
+          openTime: item.openTime,
+          closeTime: item.closeTime,
+          breakStartTime: item.breakStartTime,
+          breakEndTime: item.breakEndTime,
+        })
+        .where(eq(businessHours.id, current.id));
+      continue;
+    }
+
+    await db.insert(businessHours).values(item);
+  }
+
+  return getBusinessHoursByTenant(tenantId);
+}
+
 // ============ CONVERSATION QUERIES ============
 
 export async function createConversation(
@@ -320,7 +411,8 @@ export async function createConversation(
 
 export async function getConversationsByClient(
   tenantId: number,
-  clientId: number
+  clientId: number,
+  limit = 50
 ) {
   const db = await getDb();
   if (!db) return [];
@@ -334,7 +426,20 @@ export async function getConversationsByClient(
         eq(conversations.clientId, clientId)
       )
     )
-    .orderBy(desc(conversations.createdAt));
+    .orderBy(desc(conversations.createdAt))
+    .limit(limit);
+}
+
+export async function getConversationsByTenant(tenantId: number, limit = 200) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.tenantId, tenantId))
+    .orderBy(desc(conversations.createdAt))
+    .limit(limit);
 }
 
 // ============ NOTIFICATION QUERIES ============

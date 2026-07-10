@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,48 +6,122 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Users, Plus, Search, Mail, Phone, Calendar } from "lucide-react";
+import { Loader2, Users, Plus, Search, Mail, Phone, Calendar } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+
+type CustomerRecord = {
+  id: number;
+  name: string;
+  phone: string;
+  email: string | null;
+  notes: string | null;
+  isActive: boolean;
+};
 
 export default function Customers() {
+  const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [notes, setNotes] = useState("");
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [editingCustomerId, setEditingCustomerId] = useState<number | null>(null);
 
-  // Mock data
-  const customers = [
-    {
-      id: 1,
-      name: "João Silva",
-      phone: "(11) 99999-9999",
-      email: "joao@email.com",
-      totalBookings: 5,
-      lastBooking: new Date(Date.now() - 86400000),
-      isActive: true,
-    },
-    {
-      id: 2,
-      name: "Maria Santos",
-      phone: "(11) 98888-8888",
-      email: "maria@email.com",
-      totalBookings: 3,
-      lastBooking: new Date(Date.now() - 604800000),
-      isActive: true,
-    },
-    {
-      id: 3,
-      name: "Pedro Oliveira",
-      phone: "(11) 97777-7777",
-      email: "pedro@email.com",
-      totalBookings: 1,
-      lastBooking: new Date(Date.now() - 2592000000),
-      isActive: false,
-    },
-  ];
+  const tenantId = user?.tenantId ?? 0;
 
-  const filteredCustomers = customers.filter((customer) =>
-    customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    customer.phone.includes(searchTerm) ||
-    customer.email.toLowerCase().includes(searchTerm.toLowerCase())
+  const customersQuery = trpc.customer.list.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId) }
   );
+
+  const createCustomerMutation = trpc.customer.create.useMutation({
+    onSuccess: () => {
+      setName("");
+      setPhone("");
+      setEmail("");
+      setNotes("");
+      setIsCreateDialogOpen(false);
+      void customersQuery.refetch();
+    },
+  });
+
+  const updateCustomerMutation = trpc.customer.update.useMutation({
+    onSuccess: () => {
+      setEditingCustomerId(null);
+      setIsEditDialogOpen(false);
+      void customersQuery.refetch();
+    },
+  });
+
+  const deleteCustomerMutation = trpc.customer.delete.useMutation({
+    onSuccess: () => void customersQuery.refetch(),
+  });
+
+  const customers = customersQuery.data ?? [];
+  const editingCustomer = customers.find((customer) => customer.id === editingCustomerId) ?? null;
+
+  useEffect(() => {
+    if (!editingCustomer) return;
+
+    setName(editingCustomer.name ?? "");
+    setPhone(editingCustomer.phone ?? "");
+    setEmail(editingCustomer.email ?? "");
+    setNotes(editingCustomer.notes ?? "");
+  }, [editingCustomer]);
+
+  const filteredCustomers = useMemo(
+    () =>
+      customers.filter((customer) =>
+        customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        customer.phone.includes(searchTerm) ||
+        (customer.email ?? "").toLowerCase().includes(searchTerm.toLowerCase())
+      ),
+    [customers, searchTerm]
+  );
+
+  const handleCreateCustomer = () => {
+    if (!tenantId || !name || !phone) return;
+
+    createCustomerMutation.mutate({
+      tenantId,
+      name,
+      phone,
+      email: email || undefined,
+      notes: notes || undefined,
+    });
+  };
+
+  const handleUpdateCustomer = () => {
+    if (!tenantId || !editingCustomerId || !name || !phone) return;
+
+    updateCustomerMutation.mutate({
+      tenantId,
+      clientId: editingCustomerId,
+      name,
+      phone,
+      email: email || undefined,
+      notes: notes || undefined,
+    });
+  };
+
+  const openEditCustomer = (customer: CustomerRecord) => {
+    setEditingCustomerId(customer.id);
+    setName(customer.name ?? "");
+    setPhone(customer.phone ?? "");
+    setEmail(customer.email ?? "");
+    setNotes(customer.notes ?? "");
+    setIsEditDialogOpen(true);
+  };
+
+  const handleDeleteCustomer = (customerId: number) => {
+    if (!tenantId) return;
+    if (!window.confirm("Desativar este cliente?")) return;
+
+    deleteCustomerMutation.mutate({ tenantId, clientId: customerId });
+  };
 
   return (
     <DashboardLayout>
@@ -73,21 +147,66 @@ export default function Customers() {
               <div className="space-y-4">
                 <div>
                   <Label htmlFor="name">Nome</Label>
-                  <Input id="name" placeholder="Nome completo" />
+                  <Input id="name" placeholder="Nome completo" value={name} onChange={(e) => setName(e.target.value)} />
                 </div>
                 <div>
                   <Label htmlFor="phone">Telefone</Label>
-                  <Input id="phone" placeholder="(11) 99999-9999" />
+                  <Input id="phone" placeholder="(11) 99999-9999" value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </div>
                 <div>
                   <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" placeholder="email@example.com" />
+                  <Input id="email" type="email" placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
                 </div>
                 <div>
                   <Label htmlFor="notes">Notas</Label>
-                  <Input id="notes" placeholder="Informações adicionais" />
+                  <Input id="notes" placeholder="Informações adicionais" value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button className="w-full">Adicionar Cliente</Button>
+                <Button className="w-full" onClick={handleCreateCustomer} disabled={createCustomerMutation.isPending || !name || !phone}>
+                  {createCustomerMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Salvando...
+                    </span>
+                  ) : (
+                    "Adicionar Cliente"
+                  )}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Editar Cliente</DialogTitle>
+                <DialogDescription>Atualize os dados do cliente</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="edit-name">Nome</Label>
+                  <Input id="edit-name" placeholder="Nome completo" value={name} onChange={(e) => setName(e.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor="edit-phone">Telefone</Label>
+                  <Input id="edit-phone" placeholder="(11) 99999-9999" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor="edit-email">Email</Label>
+                  <Input id="edit-email" type="email" placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor="edit-notes">Notas</Label>
+                  <Input id="edit-notes" placeholder="Informações adicionais" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </div>
+                <Button className="w-full" onClick={handleUpdateCustomer} disabled={updateCustomerMutation.isPending || !name || !phone}>
+                  {updateCustomerMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Salvando...
+                    </span>
+                  ) : (
+                    "Salvar Alterações"
+                  )}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -106,6 +225,15 @@ export default function Customers() {
 
         {/* Customers Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {customersQuery.isFetching ? (
+            <Card className="md:col-span-2 lg:col-span-3">
+              <CardContent className="flex items-center gap-3 py-12 text-sm text-slate-600">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Carregando clientes reais...
+              </CardContent>
+            </Card>
+          ) : null}
+
           {filteredCustomers.length === 0 ? (
             <Card className="md:col-span-2 lg:col-span-3">
               <CardContent className="flex flex-col items-center justify-center py-12">
@@ -145,14 +273,14 @@ export default function Customers() {
 
                   <div className="pt-3 border-t border-slate-200">
                     <p className="text-xs text-slate-500 mb-3">
-                      Último agendamento: {customer.lastBooking.toLocaleDateString("pt-BR")}
+                      Último agendamento: {customer.lastBookingDate ? new Date(customer.lastBookingDate).toLocaleDateString("pt-BR") : "Sem histórico"}
                     </p>
                     <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1">
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => openEditCustomer(customer)}>
                         Editar
                       </Button>
-                      <Button variant="outline" size="sm" className="flex-1">
-                        Detalhes
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => handleDeleteCustomer(customer.id)}>
+                        Desativar
                       </Button>
                     </div>
                   </div>

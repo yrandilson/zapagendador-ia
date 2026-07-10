@@ -28,7 +28,7 @@
 | **Banco de Dados** | MySQL (Drizzle ORM) | Relacional com suporte a multi-tenancy |
 | **IA** | Google Gemini API | Processamento natural de linguagem |
 | **Armazenamento** | AWS S3 | Armazenamento seguro de documentos |
-| **Autenticação** | Manus OAuth | Autenticação integrada |
+| **Autenticação** | OAuth | Autenticação integrada |
 
 ### Estrutura de Dados
 
@@ -156,6 +156,20 @@ Verificação de webhook (para Evolution API).
 
 ## 📊 Rotas tRPC
 
+### AI / Assistente Local
+
+```typescript
+// Enviar conversa para o modelo local do servidor
+trpc.ai.chat({
+  messages,
+  clientName?,
+  tenantId?
+})
+```
+
+Esta rota é consumida pela tela real em `/ai` e usa o backend local em Ollama para interpretar intenções de agendamento.
+Quando um cliente é selecionado, a tela também carrega o histórico persistido via `trpc.ai.history` e grava novas mensagens na tabela `conversations`.
+
 ### Appointments
 
 ```typescript
@@ -238,6 +252,109 @@ if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin"
   throw new Error("Unauthorized");
 }
 ```
+
+---
+
+## 📌 Estado Atual do Projeto
+
+Esta documentação descreve o que o código realmente faz hoje, não apenas a intenção do produto.
+
+### Fluxos que já existem no backend
+
+- Autenticação via OAuth no contexto do servidor.
+- Autenticação real no frontend via `trpc.auth.me` e logout por tRPC.
+- Tela real de IA em `/ai`, conectada ao endpoint `trpc.ai.chat`.
+- Tela real de agendamentos conectada a `appointment.list` e `appointment.create`.
+- Tela real de clientes conectada a `customer.list` e `customer.create`.
+- Tela real de serviços conectada a `service.list` e `service.create`.
+- Tela real de configurações com persistência de tenant, horários e integrações via `tenant.update` e `businessHours.save`.
+- Tela real de documentos com upload, listagem e abertura de arquivos via `document.upload` e `document.list`.
+- Preferências de notificações da aba Settings agora também persistem no tenant.
+- Rotas tRPC para tenant, agendamentos, clientes, serviços, horários, notificações, documentos e analytics.
+- Webhook de WhatsApp em `/api/webhooks/whatsapp` com validação `GET` e processamento `POST`.
+- Integração com Gemini/Ollama para interpretação de mensagens.
+- Helpers de storage para upload e download de arquivos via proxy externo.
+
+### Fluxos que ainda estão mockados no frontend
+
+- A tela de IA já é real, mas ainda funciona como assistente de validação e análise, não como painel completo de atendimento com histórico persistido.
+- O dashboard inicial ainda usa métricas estáticas em vez de agregações do banco, mas já recebeu o primeiro resumo real de métricas.
+- Editar/excluir clientes e serviços ainda não está implementado.
+- A aba de integrações em Settings já persiste dados reais do tenant.
+
+### Erros e inconsistências conhecidas
+
+- A criação de agendamento tenta notificar o proprietário, mas agora o fluxo continua mesmo se `BUILT_IN_FORGE_API_URL` ou `BUILT_IN_FORGE_API_KEY` não existirem.
+- A suíte de testes já expõe esse problema em `appointment.create`.
+- O documento antigo de webhook estava desatualizado: o servidor real espera o payload da Evolution API em `data.messages[0]`, não o JSON simplificado mostrado antes.
+- O `package.json` ainda usa o bloco `pnpm` antigo, que hoje gera aviso e pode confundir manutenção.
+
+### Correções documentadas para o fluxo real
+
+#### Webhook WhatsApp
+
+Payload aceito hoje pelo servidor:
+
+```json
+{
+  "data": {
+    "instanceName": "zapagendador-bot",
+    "messages": [
+      {
+        "key": {
+          "remoteJid": "5511999999999@s.whatsapp.net",
+          "fromMe": false,
+          "id": "3EB0..."
+        },
+        "message": {
+          "conversation": "Oi, quero marcar um corte"
+        },
+        "messageTimestamp": 1680000000
+      }
+    ]
+  }
+}
+```
+
+Fluxo executado:
+
+1. Identifica a instância e resolve o tenant pelo slug.
+2. Busca ou cria o cliente pelo telefone.
+3. Envia a mensagem para a IA.
+4. Registra logs da IA e do webhook.
+5. Se a intenção for agendamento, cria o agendamento no banco.
+6. Envia a resposta via Evolution API.
+
+#### Criação de agendamento via tRPC
+
+Fluxo executado:
+
+1. Valida tenant e permissões.
+2. Cria o agendamento com status `pending`.
+3. Tenta notificar o proprietário sem bloquear a criação se a integração estiver ausente.
+4. Retorna o resultado da criação.
+
+Ponto de falha atual:
+
+- Se a integração de notificação não estiver configurada, o passo 3 lança erro e interrompe a criação.
+
+#### Frontend
+
+Fluxo esperado, mas ainda incompleto:
+
+1. `auth.me` deveria definir o usuário real no cliente.
+2. As telas deveriam usar queries e mutations tRPC.
+3. A UI deveria refletir os dados persistidos no banco.
+
+Hoje o frontend ainda mantém parte desse estado apenas em memória, exceto a tela `/ai`, que já conversa com o modelo local do servidor e persiste histórico por tenant e cliente quando há um cliente selecionado.
+
+### Próximos blocos que realmente faltam
+
+- Conectar o frontend ao backend nas telas principais.
+- Tornar a notificação opcional ou tolerante a ausência de config.
+- Implementar upload de documentos com fluxo end-to-end.
+- Adicionar testes de integração cobrindo webhook e fluxo completo de agendamento.
+- Persistir configurações do negócio e preferências de notificação.
 
 ---
 
@@ -351,7 +468,7 @@ WHATSAPP_VERIFY_TOKEN=verify_token_123
 
 # Auth
 JWT_SECRET=your_jwt_secret
-OAUTH_SERVER_URL=https://api.manus.im
+OAUTH_SERVER_URL=https://seu-servidor-oauth.exemplo
 
 # S3
 AWS_ACCESS_KEY_ID=your_key

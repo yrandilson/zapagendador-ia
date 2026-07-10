@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, Plus, Search, Filter, Clock, User, Phone } from "lucide-react";
+import { Calendar, Loader2, Plus, Search, Filter, Clock, User, Phone } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 
@@ -16,28 +16,106 @@ export default function Appointments() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
+  const [selectedServiceId, setSelectedServiceId] = useState<number | null>(null);
+  const [startTime, setStartTime] = useState("");
+  const [notes, setNotes] = useState("");
 
-  // Mock data - será substituído por queries reais
-  const appointments = [
-    {
-      id: 1,
-      clientName: "João Silva",
-      clientPhone: "(11) 99999-9999",
-      service: "Corte de Cabelo",
-      startTime: new Date(Date.now() + 86400000),
-      status: "confirmed",
-      notes: "Cliente preferencial",
+  const tenantId = user?.tenantId ?? 0;
+
+  const appointmentsQuery = trpc.appointment.list.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId) }
+  );
+
+  const customersQuery = trpc.customer.list.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId) }
+  );
+
+  const servicesQuery = trpc.service.list.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId) }
+  );
+
+  const createAppointmentMutation = trpc.appointment.create.useMutation({
+    onSuccess: () => {
+      setIsCreateDialogOpen(false);
+      setSelectedClientId(null);
+      setSelectedServiceId(null);
+      setStartTime("");
+      setNotes("");
+      void appointmentsQuery.refetch();
     },
-    {
-      id: 2,
-      clientName: "Maria Santos",
-      clientPhone: "(11) 98888-8888",
-      service: "Barba",
-      startTime: new Date(Date.now() + 172800000),
-      status: "pending",
-      notes: "Primeira vez",
-    },
-  ];
+  });
+
+  useEffect(() => {
+    if (!selectedClientId && customersQuery.data?.length) {
+      setSelectedClientId(customersQuery.data[0]?.id ?? null);
+    }
+  }, [customersQuery.data, selectedClientId]);
+
+  useEffect(() => {
+    if (!selectedServiceId && servicesQuery.data?.length) {
+      setSelectedServiceId(servicesQuery.data[0]?.id ?? null);
+    }
+  }, [selectedServiceId, servicesQuery.data]);
+
+  useEffect(() => {
+    if (!startTime) {
+      const defaultDate = new Date();
+      defaultDate.setDate(defaultDate.getDate() + 1);
+      defaultDate.setHours(10, 0, 0, 0);
+      const localValue = new Date(defaultDate.getTime() - defaultDate.getTimezoneOffset() * 60000)
+        .toISOString()
+        .slice(0, 16);
+      setStartTime(localValue);
+    }
+  }, [startTime]);
+
+  const appointments = appointmentsQuery.data ?? [];
+  const customers = customersQuery.data ?? [];
+  const services = servicesQuery.data ?? [];
+
+  const clientsById = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
+  const servicesById = useMemo(() => new Map(services.map((service) => [service.id, service])), [services]);
+
+  const appointmentRows = useMemo(() => {
+    return appointments.map((appointment) => {
+      const client = clientsById.get(appointment.clientId);
+      const service = servicesById.get(appointment.serviceId);
+
+      return {
+        id: appointment.id,
+        clientName: client?.name ?? `Cliente #${appointment.clientId}`,
+        clientPhone: client?.phone ?? "-",
+        service: service?.name ?? `Serviço #${appointment.serviceId}`,
+        startTime: appointment.startTime,
+        status: appointment.status,
+        notes: appointment.notes ?? undefined,
+      };
+    });
+  }, [appointments, clientsById, servicesById]);
+
+  const handleCreateAppointment = () => {
+    if (!tenantId || !selectedClientId || !selectedServiceId || !startTime) return;
+
+    const selectedService = servicesById.get(selectedServiceId);
+    if (!selectedService) return;
+
+    const start = new Date(startTime);
+    const end = new Date(start.getTime() + selectedService.durationMinutes * 60000);
+
+    createAppointmentMutation.mutate({
+      tenantId,
+      clientId: selectedClientId,
+      serviceId: selectedServiceId,
+      startTime: start,
+      endTime: end,
+      source: "web",
+      notes: notes || undefined,
+    });
+  };
 
   const statusColors: Record<string, string> = {
     pending: "bg-yellow-100 text-yellow-800",
@@ -47,7 +125,7 @@ export default function Appointments() {
     no_show: "bg-gray-100 text-gray-800",
   };
 
-  const filteredAppointments = appointments.filter((apt) => {
+  const filteredAppointments = appointmentRows.filter((apt) => {
     const matchesSearch =
       apt.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       apt.clientPhone.includes(searchTerm) ||
@@ -82,30 +160,52 @@ export default function Appointments() {
               <div className="space-y-4">
                 <div>
                   <Label htmlFor="client">Cliente</Label>
-                  <Input id="client" placeholder="Nome do cliente" />
-                </div>
-                <div>
-                  <Label htmlFor="phone">Telefone</Label>
-                  <Input id="phone" placeholder="(11) 99999-9999" />
+                  <Select value={selectedClientId ? String(selectedClientId) : ""} onValueChange={(value) => setSelectedClientId(Number(value))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={customersQuery.isFetching ? "Carregando clientes..." : "Selecione um cliente"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {customers.map((customer) => (
+                        <SelectItem key={customer.id} value={String(customer.id)}>
+                          {customer.name} {customer.phone ? `(${customer.phone})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <Label htmlFor="service">Serviço</Label>
-                  <Select>
+                  <Select value={selectedServiceId ? String(selectedServiceId) : ""} onValueChange={(value) => setSelectedServiceId(Number(value))}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Selecione um serviço" />
+                      <SelectValue placeholder={servicesQuery.isFetching ? "Carregando serviços..." : "Selecione um serviço"} />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="haircut">Corte de Cabelo</SelectItem>
-                      <SelectItem value="beard">Barba</SelectItem>
-                      <SelectItem value="combo">Corte + Barba</SelectItem>
+                      {services.map((service) => (
+                        <SelectItem key={service.id} value={String(service.id)}>
+                          {service.name} ({service.durationMinutes} min)
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
                   <Label htmlFor="date">Data e Hora</Label>
-                  <Input id="date" type="datetime-local" />
+                  <Input id="date" type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
                 </div>
-                <Button className="w-full">Criar Agendamento</Button>
+                <div>
+                  <Label htmlFor="notes">Notas</Label>
+                  <Input id="notes" placeholder="Informações adicionais" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </div>
+                <Button className="w-full" onClick={handleCreateAppointment} disabled={createAppointmentMutation.isPending || !customers.length || !services.length}>
+                  {createAppointmentMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Criando...
+                    </span>
+                  ) : (
+                    "Criar Agendamento"
+                  )}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -139,6 +239,15 @@ export default function Appointments() {
 
         {/* Appointments List */}
         <div className="space-y-3">
+          {(appointmentsQuery.isFetching || customersQuery.isFetching || servicesQuery.isFetching) ? (
+            <Card>
+              <CardContent className="flex items-center gap-3 py-12 text-sm text-slate-600">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Carregando agendamentos reais...
+              </CardContent>
+            </Card>
+          ) : null}
+
           {filteredAppointments.length === 0 ? (
             <Card>
               <CardContent className="flex flex-col items-center justify-center py-12">
@@ -160,6 +269,7 @@ export default function Appointments() {
                           {apt.status === "confirmed" && "Confirmado"}
                           {apt.status === "completed" && "Concluído"}
                           {apt.status === "cancelled" && "Cancelado"}
+                          {apt.status === "no_show" && "Não compareceu"}
                         </Badge>
                       </div>
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,67 +6,117 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Clock, Plus, Trash2, Edit2 } from "lucide-react";
+import { Clock, Loader2, Plus } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+
+type ServiceRecord = {
+  id: number;
+  name: string;
+  description: string | null;
+  durationMinutes: number;
+  price: string | null;
+  color: string | null;
+  isActive: boolean;
+};
 
 export default function Services() {
+  const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [services, setServices] = useState([
-    {
-      id: 1,
-      name: "Corte de Cabelo",
-      description: "Corte de cabelo profissional",
-      durationMinutes: 30,
-      price: "50.00",
-      color: "#3b82f6",
-    },
-    {
-      id: 2,
-      name: "Barba",
-      description: "Aparação e alinhamento de barba",
-      durationMinutes: 20,
-      price: "30.00",
-      color: "#8b5cf6",
-    },
-    {
-      id: 3,
-      name: "Corte + Barba",
-      description: "Combo: corte de cabelo + barba",
-      durationMinutes: 45,
-      price: "70.00",
-      color: "#ec4899",
-    },
-  ]);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState(30);
+  const [price, setPrice] = useState("");
+  const [color, setColor] = useState("#3b82f6");
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
 
-  const [newService, setNewService] = useState({
-    name: "",
-    description: "",
-    durationMinutes: 30,
-    price: "",
-    color: "#3b82f6",
+  const tenantId = user?.tenantId ?? 0;
+
+  const servicesQuery = trpc.service.list.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId) }
+  );
+
+  const createServiceMutation = trpc.service.create.useMutation({
+    onSuccess: () => {
+      setName("");
+      setDescription("");
+      setDurationMinutes(30);
+      setPrice("");
+      setColor("#3b82f6");
+      setIsCreateDialogOpen(false);
+      void servicesQuery.refetch();
+    },
   });
 
+  const updateServiceMutation = trpc.service.update.useMutation({
+    onSuccess: () => {
+      setEditingServiceId(null);
+      setIsEditDialogOpen(false);
+      void servicesQuery.refetch();
+    },
+  });
+
+  const deleteServiceMutation = trpc.service.delete.useMutation({
+    onSuccess: () => void servicesQuery.refetch(),
+  });
+
+  const services = servicesQuery.data ?? [];
+  const editingService = services.find((service) => service.id === editingServiceId) ?? null;
+
+  useEffect(() => {
+    if (!editingService) return;
+
+    setName(editingService.name ?? "");
+    setDescription(editingService.description ?? "");
+    setDurationMinutes(editingService.durationMinutes ?? 30);
+    setPrice(editingService.price ?? "");
+    setColor(editingService.color ?? "#3b82f6");
+  }, [editingService]);
+
   const handleAddService = () => {
-    if (newService.name && newService.price) {
-      setServices([
-        ...services,
-        {
-          id: Math.max(...services.map((s) => s.id), 0) + 1,
-          ...newService,
-        },
-      ]);
-      setNewService({
-        name: "",
-        description: "",
-        durationMinutes: 30,
-        price: "",
-        color: "#3b82f6",
-      });
-      setIsCreateDialogOpen(false);
-    }
+    if (!tenantId || !name || !price) return;
+
+    createServiceMutation.mutate({
+      tenantId,
+      name,
+      description: description || undefined,
+      durationMinutes,
+      price,
+      color,
+    });
   };
 
-  const handleDeleteService = (id: number) => {
-    setServices(services.filter((s) => s.id !== id));
+  const handleUpdateService = () => {
+    if (!tenantId || !editingServiceId || !name || !price) return;
+
+    updateServiceMutation.mutate({
+      tenantId,
+      serviceId: editingServiceId,
+      name,
+      description: description || undefined,
+      durationMinutes,
+      price,
+      color,
+    });
+  };
+
+  const openEditService = (service: ServiceRecord) => {
+    setEditingServiceId(service.id);
+    setName(service.name ?? "");
+    setDescription(service.description ?? "");
+    setDurationMinutes(service.durationMinutes ?? 30);
+    setPrice(service.price ?? "");
+    setColor(service.color ?? "#3b82f6");
+    setIsEditDialogOpen(true);
+  };
+
+  const handleDeleteService = (serviceId: number) => {
+    if (!tenantId) return;
+    if (!window.confirm("Desativar este serviço?")) return;
+
+    deleteServiceMutation.mutate({ tenantId, serviceId });
   };
 
   return (
@@ -96,8 +146,8 @@ export default function Services() {
                   <Input
                     id="serviceName"
                     placeholder="Ex: Corte de Cabelo"
-                    value={newService.name}
-                    onChange={(e) => setNewService({ ...newService, name: e.target.value })}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
                   />
                 </div>
 
@@ -106,8 +156,8 @@ export default function Services() {
                   <Input
                     id="serviceDescription"
                     placeholder="Descrição breve do serviço"
-                    value={newService.description}
-                    onChange={(e) => setNewService({ ...newService, description: e.target.value })}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
                   />
                 </div>
 
@@ -117,8 +167,8 @@ export default function Services() {
                     <Input
                       id="duration"
                       type="number"
-                      value={newService.durationMinutes}
-                      onChange={(e) => setNewService({ ...newService, durationMinutes: parseInt(e.target.value) })}
+                      value={durationMinutes}
+                      onChange={(e) => setDurationMinutes(parseInt(e.target.value))}
                       min="5"
                       step="5"
                     />
@@ -130,8 +180,8 @@ export default function Services() {
                       id="price"
                       type="number"
                       placeholder="0.00"
-                      value={newService.price}
-                      onChange={(e) => setNewService({ ...newService, price: e.target.value })}
+                      value={price}
+                      onChange={(e) => setPrice(e.target.value)}
                       step="0.01"
                     />
                   </div>
@@ -143,16 +193,103 @@ export default function Services() {
                     <Input
                       id="color"
                       type="color"
-                      value={newService.color}
-                      onChange={(e) => setNewService({ ...newService, color: e.target.value })}
+                      value={color}
+                      onChange={(e) => setColor(e.target.value)}
                       className="w-16 h-10 cursor-pointer"
                     />
-                    <span className="text-sm text-slate-600 mt-2">{newService.color}</span>
+                    <span className="text-sm text-slate-600 mt-2">{color}</span>
                   </div>
                 </div>
 
-                <Button onClick={handleAddService} className="w-full">
-                  Adicionar Serviço
+                <Button onClick={handleAddService} className="w-full" disabled={createServiceMutation.isPending || !name || !price}>
+                  {createServiceMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Salvando...
+                    </span>
+                  ) : (
+                    "Adicionar Serviço"
+                  )}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Editar Serviço</DialogTitle>
+                <DialogDescription>Atualize os dados do serviço</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="edit-serviceName">Nome do Serviço</Label>
+                  <Input
+                    id="edit-serviceName"
+                    placeholder="Ex: Corte de Cabelo"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="edit-serviceDescription">Descrição</Label>
+                  <Input
+                    id="edit-serviceDescription"
+                    placeholder="Descrição breve do serviço"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="edit-duration">Duração (minutos)</Label>
+                    <Input
+                      id="edit-duration"
+                      type="number"
+                      value={durationMinutes}
+                      onChange={(e) => setDurationMinutes(parseInt(e.target.value))}
+                      min="5"
+                      step="5"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="edit-price">Preço (R$)</Label>
+                    <Input
+                      id="edit-price"
+                      type="number"
+                      placeholder="0.00"
+                      value={price}
+                      onChange={(e) => setPrice(e.target.value)}
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label htmlFor="edit-color">Cor do Calendário</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="edit-color"
+                      type="color"
+                      value={color}
+                      onChange={(e) => setColor(e.target.value)}
+                      className="w-16 h-10 cursor-pointer"
+                    />
+                    <span className="text-sm text-slate-600 mt-2">{color}</span>
+                  </div>
+                </div>
+
+                <Button onClick={handleUpdateService} className="w-full" disabled={updateServiceMutation.isPending || !name || !price}>
+                  {updateServiceMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Salvando...
+                    </span>
+                  ) : (
+                    "Salvar Alterações"
+                  )}
                 </Button>
               </div>
             </DialogContent>
@@ -161,6 +298,15 @@ export default function Services() {
 
         {/* Services Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {servicesQuery.isFetching ? (
+            <Card className="md:col-span-2 lg:col-span-3">
+              <CardContent className="flex items-center gap-3 py-12 text-sm text-slate-600">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Carregando serviços reais...
+              </CardContent>
+            </Card>
+          ) : null}
+
           {services.length === 0 ? (
             <Card className="md:col-span-2 lg:col-span-3">
               <CardContent className="flex flex-col items-center justify-center py-12">
@@ -178,7 +324,7 @@ export default function Services() {
                       <div className="flex items-center gap-2">
                         <div
                           className="w-4 h-4 rounded"
-                          style={{ backgroundColor: service.color }}
+                          style={{ backgroundColor: service.color ?? "#3b82f6" }}
                         ></div>
                         <CardTitle className="text-lg">{service.name}</CardTitle>
                       </div>
@@ -200,20 +346,15 @@ export default function Services() {
                     </div>
                   </div>
 
-                  <div className="flex gap-2 pt-3 border-t border-slate-200">
-                    <Button variant="outline" size="sm" className="flex-1">
-                      <Edit2 className="w-4 h-4 mr-1" />
-                      Editar
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-red-600 hover:text-red-700"
-                      onClick={() => handleDeleteService(service.id)}
-                    >
-                      <Trash2 className="w-4 h-4 mr-1" />
-                      Deletar
-                    </Button>
+                  <div className="pt-3 border-t border-slate-200 text-xs text-slate-500">
+                    <div className="flex gap-2 pt-1">
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => openEditService(service)}>
+                        Editar
+                      </Button>
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => handleDeleteService(service.id)}>
+                        Desativar
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

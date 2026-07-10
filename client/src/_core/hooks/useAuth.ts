@@ -1,4 +1,7 @@
-import { useCallback, useMemo } from "react";
+import { trpc } from "@/lib/trpc";
+import { getLoginUrl } from "@/const";
+import { useCallback, useEffect, useMemo } from "react";
+import { useLocation } from "wouter";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -6,35 +9,49 @@ type UseAuthOptions = {
 };
 
 export function useAuth(options?: UseAuthOptions) {
-  // 1. Criamos um crachá de administrador local
-  const fakeUser = {
-    id: "hacker-007",
-    name: "Admin Local",
-    email: "admin@zapagendador.local",
-    role: "admin",
-    avatar: ""
-  };
+  const [, setLocation] = useLocation();
+  const userQuery = trpc.auth.me.useQuery();
 
-  // 2. Enganamos o cache do navegador e forçamos o estado autenticado
+  useEffect(() => {
+    if (!options?.redirectOnUnauthenticated) return;
+    if (userQuery.isLoading) return;
+    if (userQuery.data) return;
+
+    if (options?.redirectPath) {
+      setLocation(options.redirectPath);
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.location.href = getLoginUrl();
+    }
+  }, [options?.redirectOnUnauthenticated, options?.redirectPath, setLocation, userQuery.data, userQuery.isLoading]);
+
+  const logoutMutation = trpc.auth.logout.useMutation({
+    onSuccess: () => {
+      if (typeof window !== "undefined") {
+        window.location.href = getLoginUrl();
+      }
+    },
+  });
+
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(fakeUser)
-    );
     return {
-      user: fakeUser,
-      loading: false,
-      error: null,
-      isAuthenticated: true,
+      user: userQuery.data ?? null,
+      loading: userQuery.isLoading,
+      error: userQuery.error ?? null,
+      isAuthenticated: Boolean(userQuery.data),
     };
-  }, []);
+  }, [userQuery.data, userQuery.error, userQuery.isLoading]);
 
   // 3. Retornamos a chave-mestra sem fazer o useEffect redirecionar
   return {
     ...state,
-    refresh: () => {},
+    refresh: useCallback(async () => {
+      await userQuery.refetch();
+    }, [userQuery.refetch]),
     logout: useCallback(async () => {
-      console.log("Logout desativado no modo de desenvolvimento");
-    }, []),
+      await logoutMutation.mutateAsync();
+    }, [logoutMutation]),
   };
 }

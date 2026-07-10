@@ -6,12 +6,20 @@ import { z } from "zod";
 import * as db from "./db";
 import { notifyOwner } from "./_core/notification";
 import { generateOllamaResponse } from "./ollama";
+import { nanoid } from "nanoid";
+import { storagePut } from "./storage";
 
 export const appRouter = router({
   system: systemRouter,
 
   // ============ AI TEST ROUTE ============
   ai: router({
+    history: publicProcedure
+      .input(z.object({ tenantId: z.number(), clientId: z.number(), limit: z.number().min(1).max(100).default(50) }))
+      .query(async ({ input }) => {
+        const history = await db.getConversationsByClient(input.tenantId, input.clientId, input.limit);
+        return history.reverse();
+      }),
     chat: publicProcedure
       .input(z.object({
         messages: z.array(z.object({
@@ -20,6 +28,8 @@ export const appRouter = router({
         })),
         clientName: z.string().default("Teste"),
         tenantId: z.number().default(1),
+        clientId: z.number().optional(),
+        message: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
         const servicos = await db.getServicesByTenant(input.tenantId);
@@ -28,6 +38,41 @@ export const appRouter = router({
           input.clientName,
           servicos.map(s => s.name)
         );
+
+        if (input.clientId && input.message) {
+          const userMessageId = nanoid();
+          await db.createConversation({
+            tenantId: input.tenantId,
+            clientId: input.clientId,
+            messageId: userMessageId,
+            direction: "inbound",
+            messageText: input.message,
+            messageType: "text",
+            aiProcessed: true,
+            aiResponse: result.resposta_cliente,
+            extractedData: {
+              intencao: result.intencao,
+              servico: result.servico,
+              data: result.data,
+              hora: result.hora,
+            },
+          });
+
+          await db.createConversation({
+            tenantId: input.tenantId,
+            clientId: input.clientId,
+            messageId: `${userMessageId}-reply`,
+            direction: "outbound",
+            messageText: result.resposta_cliente,
+            messageType: "text",
+            aiProcessed: true,
+            aiResponse: result.resposta_cliente,
+            extractedData: {
+              source: "ollama",
+            },
+          });
+        }
+
         return result;
       }),
   }),
@@ -48,6 +93,48 @@ export const appRouter = router({
       .input(z.object({ tenantId: z.number() }))
       .query(async ({ input }) => {
         return db.getTenantById(input.tenantId);
+      }),
+
+    update: protectedProcedure
+      .input(
+        z.object({
+          tenantId: z.number(),
+          name: z.string().optional(),
+          email: z.string().email().optional(),
+          phone: z.string().optional(),
+          businessType: z.string().optional(),
+          timezone: z.string().optional(),
+          maxConcurrentBookings: z.number().optional(),
+          whatsappNumber: z.string().optional(),
+          whatsappApiKey: z.string().optional(),
+          geminiApiKey: z.string().optional(),
+          notificationPreferences: z
+            .object({
+              newBookings: z.boolean(),
+              reminders: z.boolean(),
+              cancellations: z.boolean(),
+              email: z.boolean(),
+            })
+            .optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        return db.updateTenant(input.tenantId, {
+          name: input.name,
+          email: input.email,
+          phone: input.phone,
+          businessType: input.businessType,
+          timezone: input.timezone,
+          maxConcurrentBookings: input.maxConcurrentBookings,
+          whatsappNumber: input.whatsappNumber,
+          whatsappApiKey: input.whatsappApiKey,
+          geminiApiKey: input.geminiApiKey,
+          notificationPreferences: input.notificationPreferences,
+        });
       }),
 
     getBySlug: publicProcedure
@@ -133,10 +220,14 @@ export const appRouter = router({
         });
 
         // Notify owner
-        await notifyOwner({
+        const notificationSent = await notifyOwner({
           title: "New Booking Request",
           content: `A new booking request has been received. Please review it in your dashboard.`,
         });
+
+        if (!notificationSent) {
+          console.warn("[Appointments] Owner notification skipped or failed, but appointment was created successfully.");
+        }
 
         return appointment;
       }),
@@ -207,6 +298,42 @@ export const appRouter = router({
           isActive: true,
         });
       }),
+
+    update: protectedProcedure
+      .input(
+        z.object({
+          tenantId: z.number(),
+          clientId: z.number(),
+          name: z.string().optional(),
+          phone: z.string().optional(),
+          email: z.string().email().optional(),
+          notes: z.string().optional(),
+          isActive: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        return db.updateClient(input.clientId, {
+          name: input.name,
+          phone: input.phone,
+          email: input.email,
+          notes: input.notes,
+          isActive: input.isActive,
+        });
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ tenantId: z.number(), clientId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        return db.deactivateClient(input.clientId);
+      }),
   }),
 
   // ============ SERVICE ROUTES ============
@@ -247,6 +374,54 @@ export const appRouter = router({
           isActive: true,
         });
       }),
+
+    update: protectedProcedure
+      .input(
+        z.object({
+          tenantId: z.number(),
+          serviceId: z.number(),
+          name: z.string().optional(),
+          description: z.string().optional(),
+          durationMinutes: z.number().optional(),
+          price: z.string().optional(),
+          color: z.string().optional(),
+          isActive: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        const service = await db.getServiceById(input.serviceId);
+        if (!service || service.tenantId !== input.tenantId) {
+          throw new Error("Service not found");
+        }
+
+        return db.updateService(input.serviceId, {
+          name: input.name,
+          description: input.description,
+          durationMinutes: input.durationMinutes,
+          price: input.price,
+          color: input.color,
+          isActive: input.isActive,
+        });
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ tenantId: z.number(), serviceId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        const service = await db.getServiceById(input.serviceId);
+        if (!service || service.tenantId !== input.tenantId) {
+          throw new Error("Service not found");
+        }
+
+        return db.deactivateService(input.serviceId);
+      }),
   }),
 
   // ============ BUSINESS HOURS ROUTES ============
@@ -259,6 +434,36 @@ export const appRouter = router({
         }
 
         return db.getBusinessHoursByTenant(input.tenantId);
+      }),
+
+    save: protectedProcedure
+      .input(
+        z.object({
+          tenantId: z.number(),
+          items: z.array(
+            z.object({
+              dayOfWeek: z.number().min(0).max(6),
+              isOpen: z.boolean(),
+              openTime: z.string(),
+              closeTime: z.string(),
+              breakStartTime: z.string().optional(),
+              breakEndTime: z.string().optional(),
+            })
+          ),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        return db.upsertBusinessHoursForTenant(
+          input.tenantId,
+          input.items.map((item) => ({
+            tenantId: input.tenantId,
+            ...item,
+          }))
+        );
       }),
 
     create: protectedProcedure
@@ -323,6 +528,53 @@ export const appRouter = router({
         return db.getDocumentsByClient(input.tenantId, input.clientId);
       }),
 
+    upload: protectedProcedure
+      .input(
+        z.object({
+          tenantId: z.number(),
+          clientId: z.number(),
+          fileName: z.string(),
+          fileType: z.string(),
+          fileSize: z.number(),
+          fileDataBase64: z.string(),
+          documentType: z.string().optional(),
+          appointmentId: z.number().optional(),
+          conversationId: z.number().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        const client = await db.getClientById(input.tenantId, input.clientId);
+        if (!client) {
+          throw new Error("Client not found");
+        }
+
+        const base64 = input.fileDataBase64.includes(",")
+          ? input.fileDataBase64.split(",").pop() ?? input.fileDataBase64
+          : input.fileDataBase64;
+        const fileBuffer = Buffer.from(base64, "base64");
+        const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+        const storageKey = `tenants/${input.tenantId}/documents/${Date.now()}-${nanoid(8)}-${safeFileName}`;
+        const { key, url } = await storagePut(storageKey, fileBuffer, input.fileType);
+
+        return db.createDocument({
+          tenantId: input.tenantId,
+          clientId: input.clientId,
+          appointmentId: input.appointmentId,
+          conversationId: input.conversationId,
+          fileName: input.fileName,
+          fileType: input.fileType,
+          fileSize: input.fileSize,
+          s3Key: key,
+          s3Url: url,
+          documentType: input.documentType,
+          isPublic: false,
+        });
+      }),
+
     create: protectedProcedure
       .input(
         z.object({
@@ -366,6 +618,57 @@ export const appRouter = router({
         }
 
         return db.getAnalyticsByTenant(input.tenantId, input.startDate, input.endDate);
+      }),
+  }),
+
+  dashboard: router({
+    summary: protectedProcedure
+      .input(z.object({ tenantId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        if (ctx.user?.tenantId !== input.tenantId && ctx.user?.role !== "platform_admin") {
+          throw new Error("Unauthorized");
+        }
+
+        const [appointments, clients, conversations, services] = await Promise.all([
+          db.getAppointmentsByTenant(input.tenantId),
+          db.getClientsByTenant(input.tenantId),
+          db.getConversationsByTenant(input.tenantId),
+          db.getServicesByTenant(input.tenantId),
+        ]);
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const appointmentsToday = appointments.filter((appointment) => {
+          const start = new Date(appointment.startTime);
+          return start >= today && start < tomorrow;
+        }).length;
+
+        const completedBookings = appointments.filter((appointment) => appointment.status === "completed").length;
+        const conversionRate = appointments.length > 0 ? Math.round((completedBookings / appointments.length) * 100) : 0;
+
+        const recentAppointments = appointments.slice(0, 5).map((appointment) => {
+          const client = clients.find((item) => item.id === appointment.clientId);
+          const service = services.find((item) => item.id === appointment.serviceId);
+
+          return {
+            id: appointment.id,
+            clientName: client?.name ?? `Cliente #${appointment.clientId}`,
+            serviceName: service?.name ?? `Serviço #${appointment.serviceId}`,
+            status: appointment.status,
+            startTime: appointment.startTime,
+          };
+        });
+
+        return {
+          appointmentsToday,
+          activeClients: clients.filter((client) => client.isActive).length,
+          conversionRate,
+          messagesProcessed: conversations.length,
+          recentAppointments,
+        };
       }),
   }),
 });

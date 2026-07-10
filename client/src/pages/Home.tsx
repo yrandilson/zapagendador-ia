@@ -3,12 +3,19 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getLoginUrl } from "@/const";
-import { Calendar, Users, Clock, TrendingUp, MessageSquare, Settings } from "lucide-react";
+import { Calendar, FileText, Users, Clock, TrendingUp, MessageSquare, Settings } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useLocation } from "wouter";
+import { trpc } from "@/lib/trpc";
 
 export default function Home() {
   const { user, loading, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
+  const tenantId = user?.tenantId ?? 0;
+  const summaryQuery = trpc.dashboard.summary.useQuery(
+    { tenantId },
+    { enabled: Boolean(user?.tenantId && isAuthenticated) }
+  );
 
   if (loading) {
     return (
@@ -89,8 +96,10 @@ export default function Home() {
               <CardTitle className="text-sm font-medium text-slate-600">Agendamentos Hoje</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-slate-900">0</div>
-              <p className="text-xs text-slate-500 mt-1">Nenhum agendamento</p>
+              <div className="text-3xl font-bold text-slate-900">
+                {summaryQuery.isFetching ? <Loader2 className="h-6 w-6 animate-spin" /> : summaryQuery.data?.appointmentsToday ?? 0}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">{summaryQuery.data?.appointmentsToday ? "Agendamentos do dia" : "Nenhum agendamento"}</p>
             </CardContent>
           </Card>
 
@@ -99,8 +108,10 @@ export default function Home() {
               <CardTitle className="text-sm font-medium text-slate-600">Clientes Ativos</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-slate-900">0</div>
-              <p className="text-xs text-slate-500 mt-1">Nenhum cliente</p>
+              <div className="text-3xl font-bold text-slate-900">
+                {summaryQuery.isFetching ? <Loader2 className="h-6 w-6 animate-spin" /> : summaryQuery.data?.activeClients ?? 0}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">{summaryQuery.data?.activeClients ? "Clientes ativos" : "Nenhum cliente"}</p>
             </CardContent>
           </Card>
 
@@ -109,8 +120,10 @@ export default function Home() {
               <CardTitle className="text-sm font-medium text-slate-600">Taxa de Conversão</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-slate-900">0%</div>
-              <p className="text-xs text-slate-500 mt-1">Sem dados</p>
+              <div className="text-3xl font-bold text-slate-900">
+                {summaryQuery.isFetching ? <Loader2 className="h-6 w-6 animate-spin" /> : `${summaryQuery.data?.conversionRate ?? 0}%`}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Conversão dos agendamentos</p>
             </CardContent>
           </Card>
 
@@ -119,8 +132,10 @@ export default function Home() {
               <CardTitle className="text-sm font-medium text-slate-600">Mensagens Processadas</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-slate-900">0</div>
-              <p className="text-xs text-slate-500 mt-1">Nenhuma mensagem</p>
+              <div className="text-3xl font-bold text-slate-900">
+                {summaryQuery.isFetching ? <Loader2 className="h-6 w-6 animate-spin" /> : summaryQuery.data?.messagesProcessed ?? 0}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Mensagens analisadas pela IA</p>
             </CardContent>
           </Card>
         </div>
@@ -168,6 +183,14 @@ export default function Home() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
+                onClick={() => navigate("/documents")}
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                Documentos
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
                 onClick={() => navigate("/services")}
               >
                 <Clock className="w-4 h-4 mr-2" />
@@ -192,17 +215,39 @@ export default function Home() {
             <CardDescription>Últimas ações na plataforma</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between py-3 border-b border-slate-200">
-                <div className="flex items-center space-x-3">
-                  <div className="w-2 h-2 rounded-full bg-slate-300"></div>
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">Nenhuma atividade</p>
-                    <p className="text-xs text-slate-500">Comece criando seus primeiros agendamentos</p>
+            {summaryQuery.isFetching ? (
+              <div className="flex items-center gap-2 text-sm text-slate-600 py-3">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Carregando atividade recente...
+              </div>
+            ) : summaryQuery.data?.recentAppointments.length ? (
+              <div className="space-y-4">
+                {summaryQuery.data.recentAppointments.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between py-3 border-b border-slate-200 last:border-0">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-2 h-2 rounded-full bg-slate-300"></div>
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">{item.clientName}</p>
+                        <p className="text-xs text-slate-500">{item.serviceName} · {new Date(item.startTime).toLocaleString("pt-BR")}</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500 capitalize">{item.status}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between py-3 border-b border-slate-200">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-2 h-2 rounded-full bg-slate-300"></div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-900">Nenhuma atividade</p>
+                      <p className="text-xs text-slate-500">Comece criando seus primeiros agendamentos</p>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
           </CardContent>
         </Card>
       </div>
